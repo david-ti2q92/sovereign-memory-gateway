@@ -17,3 +17,14 @@ This server resides on **Node 2A (Data Plane)** and acts as the sole interface b
 
 ## License
 MIT (Part of the Sovereign AI Open Framework)
+
+## Current Status: Phase 2 Functional
+- [x] **MCP Protocol Scaffold:** Basic server structure implemented.
+- [x] **Namespace Isolation:** Logic enforced to prevent cross-agent data access.
+- [x] **Data Plane Integration:** Successfully wired to containerized PostgreSQL (`canonical_postgres`).
+- [x] **Persistence Verified:** Confirmed UUID generation and storage in the `hermes.memories` schema.
+
+## Integration Details
+- **Database:** PostgreSQL 16 (Alpine Docker)
+- **Schema Isolation:** Per-agent schema (e.g., `hermes.`)
+- **Connection:** Secured via internal host-to-container port mapping (127.0.0.1:5432)
