@@ -1,0 +1,15 @@
+version: "1.0"
+namespaces:
+  hermes:
+    owner_agent: "agent-hermes"
+    allow_cross_read: false
+  openhuman:
+    owner_agent: "agent-openhuman"
+    allow_cross_read: true
+  openclaw:
+    owner_agent: "agent-openclaw"
+    allow_cross_read: false
+
+read_grants:
+  - source: "agent-openhuman"
+    target: "hermes"
