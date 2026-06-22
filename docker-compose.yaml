@@ -1,0 +1,18 @@
+services:
+  memory-gateway:
+    image: python:3.12-slim
+    container_name: memory-gateway
+    volumes:
+      - .:/app
+    working_dir: /app
+    environment:
+      - GATEWAY_AUTH_TOKEN=${GATEWAY_AUTH_TOKEN}
+      - GATEWAY_HOST=${GATEWAY_HOST}
+      - GATEWAY_PORT=${GATEWAY_PORT}
+      - MEMORY_BACKEND_URL=${MEMORY_BACKEND_URL}
+      - PYTHONPATH=/app/.venv/lib/python3.12/site-packages
+    ports:
+      - "${GATEWAY_BIND_HOST}:${GATEWAY_PORT}:${GATEWAY_PORT}"
+    command: >
+      sh -c "python main.py"
+    restart: unless-stopped

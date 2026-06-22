@@ -27,4 +27,10 @@ MIT (Part of the Sovereign AI Open Framework)
 ## Integration Details
 - **Database:** PostgreSQL 16 (Alpine Docker)
 - **Schema Isolation:** Per-agent schema (e.g., `hermes.`)
-- **Connection:** Secured via internal host-to-container port mapping (127.0.0.1:5432)
+- **Connection:** Secured via internal host-to-container port mapping configured through environment variables.
+
+## MCP Transport
+- Canonical SSE endpoint: `/mcp`
+- Legacy SSE alias: `/sse`
+- The MCP server emits a per-session message endpoint in the SSE `endpoint` event.
+- Client POSTs to the message endpoint must include the exact `session_id` query parameter from that event; otherwise the MCP SDK returns HTTP 400.

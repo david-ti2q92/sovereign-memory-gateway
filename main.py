@@ -1,136 +1,210 @@
+import json
 import os
-import uuid
-import yaml
+from typing import Any
+
 import httpx
 import uvicorn
-from datetime import datetime
 from dotenv import load_dotenv
-
-# 1. Load Environment Configuration (Master Spec §2)
-load_dotenv()
-BRAIN_ENDPOINT = os.getenv("BRAIN_ENDPOINT", "http://100.110.123.30:11434/api/embeddings")
-GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", 8091))
-POLICY_PATH = os.getenv("NAMESPACE_POLICY_PATH", "config/namespace_policy.yaml")
-
-# 2. Stable Low-Level MCP & Web Server Imports
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
-from mcp.types import Tool, TextContent
+from mcp.types import TextContent, Tool
 from starlette.applications import Starlette
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Mount, Route
-from starlette.responses import Response
 
-# 3. Initialize the Base Server instance
+load_dotenv()
+
+GATEWAY_HOST = os.getenv("GATEWAY_HOST", "localhost")
+GATEWAY_PORT = int(os.getenv("GATEWAY_PORT", 8091))
+GATEWAY_AUTH_TOKEN = os.getenv("GATEWAY_AUTH_TOKEN", "")
+MEMORY_BACKEND_URL = os.getenv("MEMORY_BACKEND_URL", "http://localhost:8093/mcp/tools/invoke")
+
 server = Server("household-memory-gateway")
+mcp_bridge = SseServerTransport("/messages")
 
-def load_policy():
-    """Load the Namespace Policy (Invariant MCP-INV-03)."""
-    with open(POLICY_PATH, "r") as f:
-        return yaml.safe_load(f)
 
-async def get_embedding(text: str):
-    """Call Node 1 for semantic vectors using the environment-configured endpoint."""
-    payload = {"model": "nomic-embed-text", "prompt": text}
-    
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        try:
-            response = await client.post(BRAIN_ENDPOINT, json=payload)
-            response.raise_for_status()
-            # Ollama returns {"embedding": [vector]}
-            return response.json().get("embedding")
-        except Exception as e:
-            print(f"CRITICAL: Brain Endpoint Error ({BRAIN_ENDPOINT}): {e}")
-            return None
+def is_authorized_request(request: Request) -> bool:
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return False
 
-# 4. Tool Manifest (Addendum A §A3.2)
+    provided_token = auth_header.split(" ", 1)[1].strip()
+    return bool(GATEWAY_AUTH_TOKEN and provided_token == GATEWAY_AUTH_TOKEN)
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not is_authorized_request(request):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+def auth_header() -> dict[str, str]:
+    return {"Authorization": f"Bearer {GATEWAY_AUTH_TOKEN}"} if GATEWAY_AUTH_TOKEN else {}
+
+
+def tool_result(payload: dict[str, Any]):
+    return [TextContent(type="text", text=json.dumps(payload, sort_keys=True))]
+
+
+async def proxy_tool_call(name: str, arguments: dict[str, Any]) -> Any:
+    payload = {
+        "tool": name,
+        "arguments": arguments,
+    }
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(MEMORY_BACKEND_URL, json=payload, headers=auth_header())
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        return response.json()
+
+
+async def invoke_tool(request: Request):
+    payload = await request.json()
+    name = payload.get("tool", "")
+    arguments = payload.get("arguments", {})
+
+    try:
+        result = await proxy_tool_call(name, arguments if isinstance(arguments, dict) else {})
+        return JSONResponse(result)
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            {"schema_version": "v1", "error": "backend_unavailable", "detail": str(exc), "tool": name},
+            status_code=502,
+        )
+
+
 @server.list_tools()
 async def handle_list_tools():
     return [
         Tool(
             name="memory_write",
-            description="Write a semantic memory after validation.",
+            description="Write a semantic memory entry.",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "schema_version": {"type": "string"},
                     "agent_id": {"type": "string"},
                     "namespace": {"type": "string"},
                     "content": {"type": "string"},
-                    "correlation_id": {"type": "string"}
+                    "metadata": {"type": "object"},
+                    "ttl_days": {"type": ["number", "null"]},
                 },
-                "required": ["agent_id", "namespace", "content", "correlation_id"]
-            }
+                "required": ["schema_version", "agent_id", "namespace", "content", "metadata"],
+            },
         ),
         Tool(
             name="memory_search",
-            description="Semantic search within the agent's declared namespace.",
+            description="Search semantic memory entries.",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "schema_version": {"type": "string"},
                     "agent_id": {"type": "string"},
                     "namespace": {"type": "string"},
-                    "query": {"type": "string"}
+                    "query": {"type": "string"},
+                    "top_k": {"type": "number"},
+                    "filter": {"type": "object"},
                 },
-                "required": ["agent_id", "namespace", "query"]
-            }
-        )
+                "required": ["schema_version", "agent_id", "namespace", "query"],
+            },
+        ),
+        Tool(
+            name="memory_delete",
+            description="Soft-delete a memory entry by ID.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "schema_version": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "memory_id": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["schema_version", "agent_id", "memory_id", "reason"],
+            },
+        ),
+        Tool(
+            name="state_read",
+            description="Read canonical household state by key.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "schema_version": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "key": {"type": "string"},
+                },
+                "required": ["schema_version", "agent_id", "key"],
+            },
+        ),
+        Tool(
+            name="state_list_keys",
+            description="List canonical household state keys.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "schema_version": {"type": "string"},
+                    "agent_id": {"type": "string"},
+                    "prefix": {"type": ["string", "null"]},
+                },
+                "required": ["schema_version", "agent_id"],
+            },
+        ),
     ]
 
-# 5. Tool Execution (Thin Gateway Logic)
+
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict):
-    if name == "memory_write":
-        agent_id = arguments.get("agent_id")
-        namespace = arguments.get("namespace")
-        content = arguments.get("content")
-        
-        # Policy Enforcement: Invariant MCP-INV-03
-        policy = load_policy()
-        ns_config = policy.get('namespaces', {}).get(namespace)
+    try:
+        result = await proxy_tool_call(name, arguments)
+    except httpx.HTTPError as exc:
+        return tool_result({"schema_version": "v1", "error": "backend_unavailable", "detail": str(exc), "tool": name})
 
-        if not ns_config or ns_config.get('owner_agent') != agent_id:
-            return [TextContent(type="text", text="Error: Permission Denied")]
+    if isinstance(result, dict):
+        return tool_result(result)
+    return tool_result({"schema_version": "v1", "result": result})
 
-        vector = await get_embedding(content)
-        if not vector:
-            return [TextContent(type="text", text="Error: Embedding Engine Offline")]
 
-        # Log completion to console (Audit Trace)
-        print(f"[MEMORY] SUCCESS: {agent_id} -> {namespace} (Dim: {len(vector)})")
-        
-        return [TextContent(type="text", text=f"Memory Stored. ID: {uuid.uuid4()}")]
-
-    if name == "memory_search":
-        # Placeholder for search logic
-        return [TextContent(type="text", text="Search logic pending Database wiring phase.")]
-
-# 6. THE SSE TRANSPORT BRIDGE
-sse = SseServerTransport("/messages")
-
-async def handle_sse(request):
-    """
-    Handles the initial SSE connection request.
-    Uses request._send (Starlette internal) to satisfy the MCP SDK's need
-    for the raw ASGI send channel.
-    """
-    async with sse.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
+async def handle_sse(request: Request):
+    async with mcp_bridge.connect_sse(request.scope, request.receive, request._send) as (read_stream, write_stream):
         await server.run(read_stream, write_stream, server.create_initialization_options())
-    
     return Response()
 
-# 7. Starlette Application Routing
+
+async def health(request: Request):
+    return JSONResponse({"status": "ok", "service": "memory-gateway", "port": GATEWAY_PORT})
+
+
 starlette_app = Starlette(
     routes=[
-        Route("/sse", endpoint=handle_sse),
-        # Mount the handler for client-to-server JSON-RPC messages
-        Mount("/messages", app=sse.handle_post_message),
-    ]
+        Route("/health", endpoint=health, methods=["GET"]),
+        Route("/mcp/tools/invoke", endpoint=invoke_tool, methods=["POST"]),
+        Mount(
+            "/mcp",
+            app=Starlette(
+                routes=[
+                    Route("/", endpoint=handle_sse, methods=["GET"]),
+                    Mount("/messages", app=mcp_bridge.handle_post_message),
+                ],
+            ),
+        ),
+        Mount(
+            "/sse",
+            app=Starlette(
+                routes=[
+                    Route("/", endpoint=handle_sse, methods=["GET"]),
+                    Mount("/messages", app=mcp_bridge.handle_post_message),
+                ],
+            ),
+        ),
+    ],
 )
+starlette_app.mount("/messages", app=mcp_bridge.handle_post_message)
+starlette_app.router.redirect_slashes = True
+starlette_app.add_middleware(AuthMiddleware)
+
 
 if __name__ == "__main__":
-    print("--------------------------------------------------")
-    print("SOVEREIGN HOUSEHOLD AI: MEMORY GATEWAY (HARDENED)")
-    print(f"Gateway Binding: 0.0.0.0:{GATEWAY_PORT}/sse")
-    print(f"Target Brain:    {BRAIN_ENDPOINT}")
-    print("--------------------------------------------------")
-    
-    uvicorn.run(starlette_app, host="0.0.0.0", port=GATEWAY_PORT)
+    uvicorn.run(starlette_app, host=GATEWAY_HOST, port=GATEWAY_PORT)

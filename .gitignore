@@ -1,8 +1,26 @@
+.venv/
 venv/
 __pycache__/
-.env
 *.pyc
-.venv/
-.venv/
 .env
-__pycache__/
+.env.*
+*.env
+
+# Secrets and local credentials
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+secret/
+
+# Local runtime and editor files
+*.log
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+Thumbs.db
+
+# Local compose overrides
+docker-compose.override.yaml
