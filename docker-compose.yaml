@@ -9,10 +9,17 @@ services:
       - GATEWAY_AUTH_TOKEN=${GATEWAY_AUTH_TOKEN}
       - GATEWAY_HOST=${GATEWAY_HOST}
       - GATEWAY_PORT=${GATEWAY_PORT}
+      - MINT_MASTER_SECRET=${MINT_MASTER_SECRET}
       - MEMORY_BACKEND_URL=${MEMORY_BACKEND_URL}
       - PYTHONPATH=/app/.venv/lib/python3.12/site-packages
     ports:
       - "${GATEWAY_BIND_HOST}:${GATEWAY_PORT}:${GATEWAY_PORT}"
+    networks:
+      - platform_net
     command: >
       sh -c "python main.py"
     restart: unless-stopped
+
+networks:
+  platform_net:
+    external: true
