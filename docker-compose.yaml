@@ -13,7 +13,7 @@ services:
       - MEMORY_BACKEND_URL=${MEMORY_BACKEND_URL}
       - PYTHONPATH=/app/.venv/lib/python3.12/site-packages
     ports:
-      - "${GATEWAY_BIND_HOST}:${GATEWAY_PORT}:${GATEWAY_PORT}"
+      - "100.75.87.51:8091:8091"
     networks:
       - platform_net
     command: >
